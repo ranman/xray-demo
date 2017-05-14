@@ -17,6 +17,8 @@ import com.amazonaws.services.rekognition.model.Image;
 import com.amazonaws.services.rekognition.model.Label;
 import com.amazonaws.services.rekognition.model.S3Object;
 import com.amazonaws.services.s3.event.S3EventNotification.S3Entity;
+import com.amazonaws.xray.AWSXRay;
+import com.amazonaws.xray.entities.Subsegment;
 
 public class LambdaFunctionHandler implements RequestHandler<S3Event, Object> {
     private static final AmazonRekognition rekogClient;
@@ -33,21 +35,30 @@ public class LambdaFunctionHandler implements RequestHandler<S3Event, Object> {
                 .withMaxLabels(50)
                 .withMinConfidence(70F);
         Map<String, AttributeValue> labelMap = new HashMap<String, AttributeValue>();
+        Subsegment subsegment = AWSXRay.beginSubsegment("Transform Rekognition Labels");
         try {
             for (Label label: rekogClient.detectLabels(request).getLabels()) {
                 labelMap.put(label.getName(), new AttributeValue().withN(label.getConfidence().toString()));
             }
         } catch(AmazonRekognitionException ex) {
+            subsegment.addException(ex);
             throw ex;
+        } finally {
+           AWSXRay.endSubsegment();
         }
         return labelMap;
     }
 
     public Object handleRequest(S3Event input, Context context) {
         // We're only going to get one object so just grab that first one
+        Subsegment subsegment = AWSXRay.beginSubsegment("Grab S3 Info");
         S3Entity s3obj = input.getRecords().get(0).getS3();
         String bucket = s3obj.getBucket().getName();
         String key = s3obj.getObject().getKey();
+        // Add some info to x-ray segment
+        subsegment.putAnnotation("bucket", bucket);
+        subsegment.putAnnotation("key", key);
+        AWSXRay.endSubsegment();
         Map<String, AttributeValue> item = new HashMap<String, AttributeValue>();
         Map<String, AttributeValue> labelMap = getImageLabels(bucket, key);
         if (labelMap.isEmpty()) {
